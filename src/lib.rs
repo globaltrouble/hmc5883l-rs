@@ -25,14 +25,13 @@ pub struct HMC5883L<I> {
 }
 
 impl<I, E> HMC5883L<I>
-    where
-    I: Write<Error = E> + WriteRead<Error = E>, 
+where
+    I: Write<Error = E> + WriteRead<Error = E>,
 {
-
     pub fn new(i2c: I, slave_addr: Option<u8>) -> Self {
         HMC5883L {
             i2c,
-            slave_addr: slave_addr.unwrap_or(DEFAULT_SLAVE_ADDR)
+            slave_addr: slave_addr.unwrap_or(DEFAULT_SLAVE_ADDR),
         }
     }
 
@@ -41,7 +40,7 @@ impl<I, E> HMC5883L<I>
         self.write_byte(0x01, 0x20)?;
         // set in continuous-measurement mode
         self.write_byte(0x02, 0x00)?;
-        
+
         delay.delay_ms(100u8);
 
         Ok(())
@@ -51,10 +50,14 @@ impl<I, E> HMC5883L<I>
         let (x, y, z) = self.read_raw_mag()?;
 
         let gauss_lsb_xy = 1100.0;
-        let gauss_lsb_z  =  980.0;
+        let gauss_lsb_z = 980.0;
         let (x, y, z) = (x as f32, y as f32, z as f32);
 
-        let (x, y, _z) = (x/gauss_lsb_xy*100.0, y/gauss_lsb_xy*100.0, z/gauss_lsb_z*100.0);
+        let (x, y, _z) = (
+            x / gauss_lsb_xy * 100.0,
+            y / gauss_lsb_xy * 100.0,
+            z / gauss_lsb_z * 100.0,
+        );
 
         // You need to determine the correct magnetic declination for your location for accurate
         // readings. Find yours at http://www.magnetic-declination.com/
@@ -78,19 +81,18 @@ impl<I, E> HMC5883L<I>
     }
 
     pub fn read_raw_mag(&mut self) -> Result<(i16, i16, i16), HMC5883LError<E>> {
-
         // parse (x, z, y)
         let x_msb = self.read_byte(0x03)?;
         let x_lsb = self.read_byte(0x04)?;
-        let x : i16 = ((x_msb as i16) << 8) as i16 |x_lsb as i16;
+        let x: i16 = ((x_msb as i16) << 8) as i16 | x_lsb as i16;
 
         let z_msb = self.read_byte(0x05)?;
         let z_lsb = self.read_byte(0x06)?;
-        let z : i16 = ((z_msb as i16) << 8) as i16 | z_lsb as i16;
+        let z: i16 = ((z_msb as i16) << 8) as i16 | z_lsb as i16;
 
         let y_msb = self.read_byte(0x07)?;
         let y_lsb = self.read_byte(0x08)?;
-        let y : i16 = ((y_msb as i16) << 8) as i16 | y_lsb as i16;
+        let y: i16 = ((y_msb as i16) << 8) as i16 | y_lsb as i16;
 
         // rearrange tuple x, y, z values
         Ok((x, y, z))
@@ -98,7 +100,8 @@ impl<I, E> HMC5883L<I>
 
     /// Writes byte to register
     fn write_byte(&mut self, reg: u8, byte: u8) -> Result<(), HMC5883LError<E>> {
-        self.i2c.write(self.slave_addr, &[reg, byte])
+        self.i2c
+            .write(self.slave_addr, &[reg, byte])
             .map_err(HMC5883LError::I2c)?;
         Ok(())
     }
@@ -106,11 +109,9 @@ impl<I, E> HMC5883L<I>
     /// Reads byte from register
     fn read_byte(&mut self, reg: u8) -> Result<u8, HMC5883LError<E>> {
         let mut byte: [u8; 1] = [0; 1];
-        self.i2c.write_read(self.slave_addr, &[reg], &mut byte)
+        self.i2c
+            .write_read(self.slave_addr, &[reg], &mut byte)
             .map_err(HMC5883LError::I2c)?;
         Ok(byte[0])
     }
 }
-
-
-
