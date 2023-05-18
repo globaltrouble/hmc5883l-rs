@@ -1,52 +1,115 @@
-use std::f32;
-use std::thread;
-use std::time::Duration;
+#![no_std]
 
-extern crate i2cdev;
-use self::i2cdev::core::*;
-use self::i2cdev::linux::{LinuxI2CDevice, LinuxI2CError};
+extern crate embedded_hal;
+extern crate micromath;
 
-pub struct HMC5883L {
-    dev: Box<LinuxI2CDevice>
+use core::f32::consts::PI;
+
+use embedded_hal::{
+    blocking::delay::DelayMs,
+    blocking::i2c::{Write, WriteRead},
+};
+
+use micromath::F32Ext;
+
+pub const DEFAULT_SLAVE_ADDR: u8 = 0x1E;
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum HMC5883LError<E> {
+    I2c(E),
 }
 
-impl HMC5883L {
+pub struct HMC5883L<I> {
+    i2c: I,
+    slave_addr: u8,
+}
 
-    pub fn new(filename: &'static str, address: u16) -> Result<Self, Box<LinuxI2CError>> {
+impl<I, E> HMC5883L<I>
+    where
+    I: Write<Error = E> + WriteRead<Error = E>, 
+{
 
-        let mut dev = try!(LinuxI2CDevice::new(filename, address));
+    pub fn new(i2c: I, slave_addr: Option<u8>) -> Self {
+        HMC5883L {
+            i2c,
+            slave_addr: slave_addr.unwrap_or(DEFAULT_SLAVE_ADDR)
+        }
+    }
 
+    pub fn init<D: DelayMs<u8>>(&mut self, delay: &mut D) -> Result<(), HMC5883LError<E>> {
         // set gain to +/1 1.3 Gauss
-        try!(dev.smbus_write_byte_data(0x01, 0x20));
-
+        self.write_byte(0x01, 0x20)?;
         // set in continuous-measurement mode
-        try!(dev.smbus_write_byte_data(0x02, 0x00));
+        self.write_byte(0x02, 0x00)?;
+        
+        delay.delay_ms(100u8);
 
-        // delay before taking first reading
-        thread::sleep(Duration::from_millis(100));
-
-        Ok(HMC5883L { dev: Box::new(dev) })
+        Ok(())
     }
 
-    pub fn read(&mut self) -> Result<(f32, f32, f32), Box<LinuxI2CError>> {
+    pub fn heading(&mut self) -> Result<f32, HMC5883LError<E>> {
+        let (x, y, z) = self.read_raw_mag()?;
 
-        // read two bytes each from registers 03 through 05 (x, z, y)
-        let mut buf: [u8; 6] = [0; 6];
-        try!(self.dev.read(&mut buf));
+        let gauss_lsb_xy = 1100.0;
+        let gauss_lsb_z  =  980.0;
+        let (x, y, z) = (x as f32, y as f32, z as f32);
 
-        // start reading from register 03 (x value)
-        try!(self.dev.smbus_write_byte(0x03));
-        thread::sleep(Duration::from_millis(100));
+        let (x, y, _z) = (x/gauss_lsb_xy*100.0, y/gauss_lsb_xy*100.0, z/gauss_lsb_z*100.0);
 
-        // parse the data in the correct order - x, z, y (NOT x, y, z as you would expect)
-        let x : i16 = ((buf[0] as i16) << 8) as i16 | buf[1] as i16;
-        let z : i16 = ((buf[2] as i16) << 8) as i16 | buf[3] as i16;
-        let y : i16 = ((buf[4] as i16) << 8) as i16 | buf[5] as i16;
+        // You need to determine the correct magnetic declination for your location for accurate
+        // readings. Find yours at http://www.magnetic-declination.com/
+        // Warsaw is 6.45 degree, it is 0.11780972450961724 Radians
+        let declination_angle = 0.11780972450961724; // in radians, not degrees
 
-        // return tuple containing x, y, z values
-        Ok((x as f32, y as f32, z as f32))
+        let mut heading = y.atan2(x) + declination_angle;
+
+        if heading < 0.0 {
+            heading += 2.0 * PI;
+        }
+
+        if heading > 2.0 * PI {
+            heading -= 2.0 * PI;
+        }
+
+        // Convert radians to degrees for readability.
+        heading = heading * 180.0 / PI;
+
+        Ok(heading)
     }
 
+    pub fn read_raw_mag(&mut self) -> Result<(i16, i16, i16), HMC5883LError<E>> {
+
+        // parse (x, z, y)
+        let x_msb = self.read_byte(0x03)?;
+        let x_lsb = self.read_byte(0x04)?;
+        let x : i16 = ((x_msb as i16) << 8) as i16 |x_lsb as i16;
+
+        let z_msb = self.read_byte(0x05)?;
+        let z_lsb = self.read_byte(0x06)?;
+        let z : i16 = ((z_msb as i16) << 8) as i16 | z_lsb as i16;
+
+        let y_msb = self.read_byte(0x07)?;
+        let y_lsb = self.read_byte(0x08)?;
+        let y : i16 = ((y_msb as i16) << 8) as i16 | y_lsb as i16;
+
+        // rearrange tuple x, y, z values
+        Ok((x, y, z))
+    }
+
+    /// Writes byte to register
+    fn write_byte(&mut self, reg: u8, byte: u8) -> Result<(), HMC5883LError<E>> {
+        self.i2c.write(self.slave_addr, &[reg, byte])
+            .map_err(HMC5883LError::I2c)?;
+        Ok(())
+    }
+
+    /// Reads byte from register
+    fn read_byte(&mut self, reg: u8) -> Result<u8, HMC5883LError<E>> {
+        let mut byte: [u8; 1] = [0; 1];
+        self.i2c.write_read(self.slave_addr, &[reg], &mut byte)
+            .map_err(HMC5883LError::I2c)?;
+        Ok(byte[0])
+    }
 }
 
 
